@@ -20,7 +20,20 @@ class ImageRecorder:
     def __init__(self, init_node=True, is_debug=False):
         self.is_debug = is_debug
         self.bridge = CvBridge()
-        self.camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
+        # 使用者的摄像头 → 模型期待的摄像头名称映射
+        # 如果以后需要新增，只需在此处更新映射表即可。
+        self.topic_map = {
+            "cam_high": "/camera_f/color/image_raw",
+            "cam_left_wrist": "/camera_l/color/image_raw",
+            "cam_right_wrist": "/camera_r/color/image_raw",
+            # "cam_low" 不存在于当前机器人，后续会用黑图填充
+        }
+
+        # 模型期望的摄像头列表
+        self.camera_names = ["cam_high", "cam_left_wrist", "cam_right_wrist", "cam_low"]
+
+        # 实际存在（订阅）的摄像头
+        self.available_cameras = list(self.topic_map.keys())
 
         if init_node:
             rospy.init_node("image_recorder", anonymous=True)
@@ -38,7 +51,9 @@ class ImageRecorder:
                 callback_func = self.image_cb_cam_right_wrist
             else:
                 raise NotImplementedError
-            rospy.Subscriber(f"/{cam_name}", RGBGrayscaleImage, callback_func)
+            # 只为可用的摄像头订阅 ROS topics（根据映射表）
+            if cam_name in self.available_cameras:
+                rospy.Subscriber(self.topic_map[cam_name], RGBGrayscaleImage, callback_func)
             if self.is_debug:
                 setattr(self, f"{cam_name}_timestamps", deque(maxlen=50))
 
@@ -93,6 +108,11 @@ class ImageRecorder:
             rgb_image = getattr(self, f"{cam_name}_rgb_image")
             depth_image = getattr(self, f"{cam_name}_depth_image")
             self.cam_last_timestamps[cam_name] = getattr(self, f"{cam_name}_timestamp")
+            
+            # 只对 cam_left_wrist 进行特殊处理
+            if cam_name == "cam_left_wrist" and rgb_image is None:
+                rgb_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            
             image_dict[cam_name] = rgb_image
             image_dict[f"{cam_name}_depth"] = depth_image
         return image_dict
@@ -121,14 +141,19 @@ class Recorder:
 
         if init_node:
             rospy.init_node("recorder", anonymous=True)
-        rospy.Subscriber(f"/puppet_{side}/joint_states", JointState, self.puppet_state_cb)
+        # 状态 topic
+        rospy.Subscriber(f"/{side}_arm/joint_states_single", JointState, self.puppet_state_cb)
+
+        # 命令 topic
+        # 根据您的描述，我只修改了 joint_single 的 topic。
+        # 由于没有提供 joint_group 的 topic，我暂时将其注释掉。这对推理没有影响。
+        # rospy.Subscriber(
+        #     f"/puppet_{side}/commands/joint_group",
+        #     JointGroupCommand,
+        #     self.puppet_arm_commands_cb,
+        # )
         rospy.Subscriber(
-            f"/puppet_{side}/commands/joint_group",
-            JointGroupCommand,
-            self.puppet_arm_commands_cb,
-        )
-        rospy.Subscriber(
-            f"/puppet_{side}/commands/joint_single",
+            f"/{side}_arm/joint_ctrl_single",
             JointSingleCommand,
             self.puppet_gripper_commands_cb,
         )

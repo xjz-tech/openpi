@@ -170,7 +170,12 @@ def _ensure_permissions(path: pathlib.Path) -> None:
 
 def _get_mtime(year: int, month: int, day: int) -> float:
     """Get the mtime of a given date at midnight UTC."""
-    date = datetime.datetime(year, month, day, tzinfo=datetime.UTC)
+    try:
+        # Python 3.11+
+        date = datetime.datetime(year, month, day, tzinfo=datetime.UTC)
+    except AttributeError:
+        # Python 3.10 and below
+        date = datetime.datetime(year, month, day, tzinfo=datetime.timezone.utc)
     return time.mktime(date.timetuple())
 
 

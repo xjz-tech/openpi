@@ -15,6 +15,28 @@ import numpy as np
 import optax
 import tqdm_loggable.auto as tqdm
 import wandb
+import os
+
+# ---------------------------------------------------------------------------
+# Redirect heavy cache directories away from $HOME to a shared NFS location.
+# Users can override these paths via shell env vars; we only set them if
+# they are *not* already defined, to avoid breaking custom setups.
+# ---------------------------------------------------------------------------
+_DEFAULT_CACHE_BASE = "/nfs/turbo/coe-vkamat"  # change to your NFS prefix if needed
+os.environ.setdefault("HF_HOME", f"{_DEFAULT_CACHE_BASE}/huggingface")
+os.environ.setdefault("PIP_CACHE_DIR", f"{_DEFAULT_CACHE_BASE}/pip_cache")
+os.environ.setdefault("WANDB_DIR", f"{_DEFAULT_CACHE_BASE}/wandb")
+os.environ.setdefault("WANDB_CACHE_DIR", f"{_DEFAULT_CACHE_BASE}/wandb")
+os.environ.setdefault("XDG_CACHE_HOME", f"{_DEFAULT_CACHE_BASE}/.cache")
+
+# Ensure the directories exist to avoid runtime errors.
+for _d in [os.environ["WANDB_DIR"], os.environ["WANDB_CACHE_DIR"], os.environ["XDG_CACHE_HOME"], os.environ["HF_HOME"], os.environ["PIP_CACHE_DIR"]]:
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except OSError:
+        # If the directory cannot be created (e.g., read-only FS), continue –
+        # downstream libraries will surface a clearer error.
+        pass
 
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
@@ -229,7 +251,7 @@ def main(config: _config.TrainConfig):
     # Log images from first batch to sanity check.
     images_to_log = [
         wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
+        for i in range(len(next(iter(batch[0].images.values()))))
     ]
     wandb.log({"camera_views": images_to_log}, step=0)
 

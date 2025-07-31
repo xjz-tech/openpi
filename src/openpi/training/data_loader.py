@@ -4,16 +4,19 @@ import os
 import typing
 from typing import Protocol, SupportsIndex, TypeVar
 
+import flax
 import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
+import orbax.checkpoint as ocp
 import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
+import datasets
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -49,7 +52,27 @@ class DataLoader(Protocol[T_co]):
         raise NotImplementedError("Subclasses of DataLoader should implement __iter__.")
 
 
+# Monkey patch datasets.load_dataset to automatically set the format to torch.
+_original_load_dataset = datasets.load_dataset
+
+def _patched_load_dataset(*args, **kwargs):
+    ds = _original_load_dataset(*args, **kwargs)
+    if isinstance(ds, datasets.Dataset):
+        ds.set_format(type="torch")
+    elif isinstance(ds, datasets.DatasetDict):
+        for split in ds.keys():
+            ds[split].set_format(type="torch")
+    return ds
+
+# Apply patch only once to avoid recursion
+if not hasattr(datasets.load_dataset, "_patched"):
+    datasets.load_dataset = _patched_load_dataset
+    datasets.load_dataset._patched = True
+
+
 class TransformedDataset(Dataset[T_co]):
+    """A dataset that applies a sequence of transforms to the underlying dataset."""
+
     def __init__(self, dataset: Dataset, transforms: Sequence[_transforms.DataTransformFn]):
         self._dataset = dataset
         self._transform = _transforms.compose(transforms)

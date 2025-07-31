@@ -10,9 +10,9 @@ import shutil
 from typing import Literal
 
 import h5py
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME as LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
+# from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
 import numpy as np
 import torch
 import tqdm
@@ -166,26 +166,38 @@ def load_raw_episode_data(
     ep_path: Path,
 ) -> tuple[dict[str, np.ndarray], torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     with h5py.File(ep_path, "r") as ep:
-        state = torch.from_numpy(ep["/observations/qpos"][:])
-        action = torch.from_numpy(ep["/action"][:])
+        state = torch.from_numpy(ep["/observations/qpos"][:]).to(torch.float32)
+        action = torch.from_numpy(ep["/action"][:]).to(torch.float32)
 
         velocity = None
         if "/observations/qvel" in ep:
-            velocity = torch.from_numpy(ep["/observations/qvel"][:])
+            velocity = torch.from_numpy(ep["/observations/qvel"][:]).to(torch.float32)
 
         effort = None
         if "/observations/effort" in ep:
-            effort = torch.from_numpy(ep["/observations/effort"][:])
+            effort = torch.from_numpy(ep["/observations/effort"][:]).to(torch.float32)
+
+        # 获取实际可用的相机
+        available_cameras = list(ep["/observations/images"].keys())
+        print(f"Available cameras in {ep_path.name}: {available_cameras}")
+        
+        # 过滤掉 tactile_right 相机，避免与模型期望的相机不匹配
+        available_cameras = [cam for cam in available_cameras if cam != "tactile_right"]
+        print(f"Filtered cameras (excluding tactile_right): {available_cameras}")
 
         imgs_per_cam = load_raw_images_per_camera(
             ep,
-            [
-                "cam_high",
-                "cam_low",
-                "cam_left_wrist",
-                "cam_right_wrist",
-            ],
+            available_cameras,
         )
+
+        # 为缺失的相机创建零占位符
+        expected_cameras = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
+        num_frames = state.shape[0]
+        
+        for cam in expected_cameras:
+            if cam not in imgs_per_cam:
+                print(f"Creating zero placeholder for missing camera: {cam}")
+                imgs_per_cam[cam] = np.zeros((num_frames, 480, 640, 3), dtype=np.uint8)
 
     return imgs_per_cam, state, action, velocity, effort
 
@@ -209,6 +221,7 @@ def populate_dataset(
             frame = {
                 "observation.state": state[i],
                 "action": action[i],
+                "task": task,
             }
 
             for camera, img_array in imgs_per_cam.items():
@@ -221,7 +234,7 @@ def populate_dataset(
 
             dataset.add_frame(frame)
 
-        dataset.save_episode(task=task)
+        dataset.save_episode()
 
     return dataset
 
@@ -230,7 +243,7 @@ def port_aloha(
     raw_dir: Path,
     repo_id: str,
     raw_repo_id: str | None = None,
-    task: str = "DEBUG",
+    task: str = "eraser",
     *,
     episodes: list[int] | None = None,
     push_to_hub: bool = True,
@@ -244,9 +257,12 @@ def port_aloha(
     if not raw_dir.exists():
         if raw_repo_id is None:
             raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        download_raw(raw_dir, repo_id=raw_repo_id)
+        # download_raw(raw_dir, repo_id=raw_repo_id)
 
-    hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
+    hdf5_files = sorted(raw_dir.glob("*.hdf5"))
+
+    if not hdf5_files:
+        raise FileNotFoundError(f"No HDF5 files found in {raw_dir}")
 
     dataset = create_empty_dataset(
         repo_id,
@@ -262,7 +278,7 @@ def port_aloha(
         task=task,
         episodes=episodes,
     )
-    dataset.consolidate()
+    # dataset.consolidate()  # 新版本LeRobot不需要consolidate
 
     if push_to_hub:
         dataset.push_to_hub()

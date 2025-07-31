@@ -214,6 +214,12 @@ class BaseModelConfig(abc.ABC):
     # Tokenized prompt maximum length.
     max_token_len: int
 
+
+    # @abc.abstractmethod 装饰器是干什么的？
+    # 这个装饰器来自Python的abc（Abstract Base Classes）模块，它的作用是将一个方法标记为“抽象方法”。
+    # 一个抽象方法就像一个合同或规定。它告诉Python：“任何继承自 BaseModel 这个类的子类，都必须自己实现一个名为 compute_loss 的方法，否则在实例化时就会报错。”
+    # 换句话说，这个方法必须由子类来实现，父类 BaseModel 自己不实现。
+    
     @property
     @abc.abstractmethod
     def model_type(self) -> ModelType:
