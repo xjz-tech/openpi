@@ -4,6 +4,47 @@ checkpoints/
 data/
 wandb/
 
+# Large files and containers
+*.sif
+*.simg
+*.sif.gz
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Model files and checkpoints
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Log files
+*.log
+logs/
+train_log_*.txt
+
+# Cache and temporary files
+.cache/
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Large data files
+*.parquet
+*.csv
+*.jsonl
+*.json.gz
+
+# Environment and lock files (if too large)
+uv.lock
+poetry.lock
+Pipfile.lock
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

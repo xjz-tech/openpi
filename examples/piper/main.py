@@ -184,21 +184,39 @@ class PiperController:
         msg_right.position = action[7:14].tolist()
         self._right_cmd_pub.publish(msg_right)
 
-    def _reset_to_home_position(self):
-        """将机器人移动到初始位置"""
-        left_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6]   # 左臂初始位置
-        right_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6]   # 右臂初始位置
-        
-        # 发布初始位置命令
+    def _reset_to_home_position(self, duration: float = 3.0, rate_hz: int = 30):
+        """
+        通过在指定时间内以固定频率持续发布目标位置，将机器人移动到初始位置。
+
+        Args:
+            duration (float): 持续发布指令的时长（秒）。
+            rate_hz (int): 发布指令的频率（赫兹）。
+        """
+        rospy.loginfo("正在重置机械臂到初始位置...")
+
+        # 定义关节名称和初始位置
+        joint_names = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate", "gripper"]
+        left_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]  # 调整了夹爪初始值以防超限
+        right_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]
+
+        # 创建消息
         msg_left = JointState()
+        msg_left.name = [f"left_{name}" for name in joint_names]
         msg_left.position = left_home
-        self._left_cmd_pub.publish(msg_left)
-        
+
         msg_right = JointState()
+        msg_right.name = [f"right_{name}" for name in joint_names]
         msg_right.position = right_home
-        self._right_cmd_pub.publish(msg_right)
-        
-        rospy.sleep(2.0)  # 等待机器人移动到位置
+
+        # 在循环中持续发布
+        rate = rospy.Rate(rate_hz)
+        start_time = rospy.get_time()
+        while not rospy.is_shutdown() and rospy.get_time() - start_time < duration:
+            self._left_cmd_pub.publish(msg_left)
+            self._right_cmd_pub.publish(msg_right)
+            rate.sleep()
+
+        rospy.loginfo("机械臂已重置到初始位置。")
 
     def _ready(self) -> bool:
         return (
