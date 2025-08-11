@@ -61,6 +61,7 @@ def create_empty_dataset(
         "cam_low",
         "cam_left_wrist",
         "cam_right_wrist",
+        "tactile_right",
     ]
 
     features = {
@@ -182,8 +183,8 @@ def load_raw_episode_data(
         print(f"Available cameras in {ep_path.name}: {available_cameras}")
         
         # 过滤掉 tactile_right 相机，避免与模型期望的相机不匹配
-        available_cameras = [cam for cam in available_cameras if cam != "tactile_right"]
-        print(f"Filtered cameras (excluding tactile_right): {available_cameras}")
+        # available_cameras = [cam for cam in available_cameras if cam != "tactile_right"]
+        # print(f"Filtered cameras (excluding tactile_right): {available_cameras}")
 
         imgs_per_cam = load_raw_images_per_camera(
             ep,
@@ -191,7 +192,7 @@ def load_raw_episode_data(
         )
 
         # 为缺失的相机创建零占位符
-        expected_cameras = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
+        expected_cameras = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist", "tactile_right"]
         num_frames = state.shape[0]
         
         for cam in expected_cameras:

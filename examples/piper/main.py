@@ -16,6 +16,12 @@ from openpi.policies import policy_config as _policy_config
 # 不再使用 ActionChunkBroker，而是直接调用模型策略
 
 
+# 仅对 joint5 做限位（弧度制）。
+# 假设左右臂各 7 维：左臂 joint5 索引=5，右臂 joint5 索引=7+5=12。
+JOINT5_MIN = -1.57
+JOINT5_MAX = 1.57
+
+
 class PiperController:
     """示例：从 Piper 机器人读取**三个摄像头**与**左右臂关节状态**，1
     使用本地策略进行推理并分别向左右臂发布关节命令。"""
@@ -176,6 +182,14 @@ class PiperController:
             rospy.logwarn(f"Action 长度应为 14，但得到 {action.shape[0]}，跳过发布")
             return
 
+        # 仅对 joint5 进行限位与调整
+     
+        # 左臂 joint5 索引 5
+        action[5] = float(np.clip(action[5], JOINT5_MIN, JOINT5_MAX))
+        # 右臂 joint5 索引 12
+        action[12] = float(np.clip(action[12], JOINT5_MIN, JOINT5_MAX))
+    
+
         msg_left = JointState()
         msg_left.position = action[:7].tolist()
         self._left_cmd_pub.publish(msg_left)
@@ -197,7 +211,7 @@ class PiperController:
         # 定义关节名称和初始位置
         joint_names = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate", "gripper"]
         left_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]  # 调整了夹爪初始值以防超限
-        right_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]
+        right_home = [[0.11994494400000001, 1.3828207680000002, -1.3960084320000001, 0.0, 1.046500448, 0.081498368, 0.0727]]
 
         # 创建消息
         msg_left = JointState()

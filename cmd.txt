@@ -5,7 +5,7 @@ export HF_HOME=/nfs/turbo/coe-vkamat/huggingface
 
 
 python examples/aloha_real/convert_aloha_data_to_lerobot.py \
-    --raw-dir /nfs/turbo/coe-vkamat/RoboticsDiffusionTransformer/data/wipe_color \
+    --raw-dir /nfs/turbo/coe-vkamat/RoboticsDiffusionTransformer/data/peg_data \
     --repo-id "xiejunz/peg_data" \
     --no-push-to-hub
 
@@ -36,12 +36,23 @@ srun --partition=gpu_mig40 --gres=gpu:1 --cpus-per-task=4 --mem=128G --time=48:0
         XDG_CACHE_HOME=/nfs/turbo/coe-vkamat/openpi_cache \
         JAXTYPING_DISABLE=1 && \
  /nfs/turbo/coe-vkamat/miniconda3/envs/openpi/bin/python -u scripts/train.py \
-      pi0_aloha_lora_finetune_peg --exp-name=peg_finetune_lora_full --overwrite \
+      pi0_aloha_lora_finetune_peg --exp-name=peg_finetune_lora_full --resume \
       --batch-size 16 --num-workers 2 \
       2>&1 | tee train_log_full2.txt"
 
 # 测试代码
-python examples/piper/main.py --checkpoint_dir "checkpoints/pi0_aloha_lora_finetune_peg/peg_finetune_lora_full/3000" --prompt "put the eraser into the box"
+python examples/piper/main.py --checkpoint_dir "checkpoints/pi0_aloha_lora_finetune_peg/peg_finetune_lora_full/19999" --prompt "put the eraser into the box"
+
+
+        self.joint_limits = {
+            "joint1": (-2.6878, 2.6878),  # Example limits in radians
+            "joint2": (-1.701, 1.701),
+            "joint3": (-1.482, 1.482), # -170*1000
+            "joint4": (-1.74, 1.74), # [+- 100*1000]
+            "joint5": (-1.22, 1.22), # [+-70*1000]
+            "joint6": (-1.745, 1.745),
+            "joint7": (0.0, 0.08),  # Example limits for gripper
+        }
 
 
 

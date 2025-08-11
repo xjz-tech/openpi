@@ -172,6 +172,35 @@ class Pi0(_model.BaseModel):
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
 
     @at.typecheck
+    # 这里是把图片都转换成image_tokens；然后与语言tokens拼接，得到prefix_tokens
+    # 这里ar_mask用到了累加和比较机制，prefix的所有地方都是False，所以prefix_tokens的每个位置都可以attend to所有prefix_tokens
+    # 这里图片是被分解成了patch tokens， 也就是说图片与图片patch之间可以做attention
+    
+    # 图像tokens + 语言tokens
+    # 可以关注：图像区域 + 语言区域 + 状态区域 + 动作区域
+    # 实现：完全的双向注意力
+
+    # 状态tokens
+    # 可以关注：状态区域 + 动作区域
+    # 不能关注：图像区域 + 语言区域
+    # 实现：不能回头看观测，但可以被观测关注
+
+    # 动作tokens
+    # 可以关注：动作区域（因果注意力）
+    # 不能关注：图像区域 + 语言区域 + 状态区域
+    # 实现：只能基于前面的动作生成后续动作
+
+    ## 对应的累积和：
+    ## 精确的cumsum表示：
+    # cumsum = (
+    #     [0] * 768 +      # 图像tokens (3个相机 × 256个patch)
+    #     [0] * 48 +       # 语言tokens (48个token)
+    #     [1] +            # 状态token (1个)
+    #     [2] +            # 第一个动作token (1个)
+    #     [2] * 49         # 后续动作tokens (49个)
+    # )  [2] + [2] * 49 不写成 [2] * 50 （两个确实一样，但是写的逻辑时候是因为第一个[2]为True，后续49个[2]为False）
+
+
     def embed_prefix(
         self, obs: _model.Observation
     ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
@@ -206,6 +235,8 @@ class Pi0(_model.BaseModel):
         return tokens, input_mask, ar_mask
 
     @at.typecheck
+    # 这里先处理状态tokens，然后处理动作tokens（将动作tokens与编码成向量的时间戳拼接，然后通过mlp处理）
+    # 最后再将状态tokens与动作tokens拼接，得到suffix_tokens
     def embed_suffix(
         self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, " b"]
     ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
@@ -246,6 +277,7 @@ class Pi0(_model.BaseModel):
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
+        # beta分布， 1.5, 1 是alpha和beta
         time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
         time_expanded = time[..., None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
