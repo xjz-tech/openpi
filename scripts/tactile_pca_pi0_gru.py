@@ -21,7 +21,7 @@ from openpi.policies import policy_config as _policy_config
 def _log(msg: str) -> None:
     print(f"[tactile_pca_pi0_gru] {msg}")
 
-
+# 把在各个device上的数据都变成numpy数组
 def _to_numpy(x: Any) -> np.ndarray:
     if isinstance(x, np.ndarray):
         return x
@@ -298,21 +298,21 @@ def train_gru(
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Tactile PCA + Pi0→GRU 一体化训练（输入=Pi0 动作 + 触觉 PCA，目标=真实动作）",
+        description="Tactile PCA + Pi0 → GRU joint training (inputs = Pi0 actions + tactile PCA, target = ground-truth actions)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--repo-id", type=str, required=True, help="LeRobot 数据集 repo_id")
-    p.add_argument("--horizon", type=int, default=50, help="时间窗长度")
-    p.add_argument("--hidden", type=int, default=256, help="GRU 隐藏维度")
-    p.add_argument("--epochs", type=int, default=1, help="训练轮数")
-    p.add_argument("--batch", type=int, default=8, help="批大小")
-    p.add_argument("--pi0-checkpoint", type=Path, required=True, help="Pi0 checkpoint 目录（包含 params 子目录）")
-    p.add_argument("--pi0-config", type=str, default="pi0_aloha_lora_finetune_peg", help="Pi0 配置名称")
-    p.add_argument("--prompt", type=str, default=None, help="推理默认指令（可选）")
-    p.add_argument("--skip-pca", action="store_true", help="跳过 PCA 训练，直接从 --pca-file 加载")
-    p.add_argument("--pca-out", type=Path, default=Path("artifacts/pca_tactile_right.joblib"), help="PCA 模型保存路径（joblib）")
-    p.add_argument("--pca-file", type=Path, default=None, help="若 --skip-pca，则从此处加载现有 PCA joblib")
-    p.add_argument("--gru-out", type=Path, default=Path("artifacts/gru.pth"), help="GRU 权重保存路径")
+    p.add_argument("--repo-id", type=str, required=True, help="LeRobot dataset repo_id")
+    p.add_argument("--horizon", type=int, default=50, help="Temporal window length")
+    p.add_argument("--hidden", type=int, default=256, help="GRU hidden size")
+    p.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
+    p.add_argument("--batch", type=int, default=8, help="Batch size")
+    p.add_argument("--pi0-checkpoint", type=Path, required=True, help="Pi0 checkpoint directory (must contain the params subdirectory)")
+    p.add_argument("--pi0-config", type=str, default="pi0_aloha_lora_finetune_peg", help="Pi0 config name")
+    p.add_argument("--prompt", type=str, default=None, help="Default inference prompt (optional)")
+    p.add_argument("--skip-pca", action="store_true", help="Skip PCA training and load from --pca-file")
+    p.add_argument("--pca-out", type=Path, default=Path("artifacts/pca_tactile_right.joblib"), help="Output path to save PCA model (joblib)")
+    p.add_argument("--pca-file", type=Path, default=None, help="PCA joblib to load when --skip-pca is set")
+    p.add_argument("--gru-out", type=Path, default=Path("artifacts/gru.pth"), help="Output path to save GRU weights")
 
     args = p.parse_args()
 
