@@ -62,6 +62,40 @@ class Policy(BasePolicy):
         }
         return outputs
 
+    # 批量推理：接收多个 obs，统一做变换、拼 batch、一次前向，然后拆分并做输出变换
+    def batch_infer(self, obs_list: list[dict]) -> list[dict]:  # type: ignore[misc]
+        if not obs_list:
+            return []
+
+        # 输入变换逐个应用（与 infer 中一致）
+        inputs_list = [self._input_transform(jax.tree.map(lambda x: x, obs)) for obs in obs_list]
+
+        # 拼成 batch（与 infer 中一致但不再添加新轴，而是直接 stack）
+        batched_inputs = jax.tree.map(
+            lambda *xs: jnp.stack([jnp.asarray(x) for x in xs], axis=0), *inputs_list
+        )
+
+        start_time = time.monotonic()
+        self._rng, sample_rng = jax.random.split(self._rng)
+        batched_outputs = {
+            "state": batched_inputs["state"],
+            "actions": self._sample_actions(
+                sample_rng, _model.Observation.from_dict(batched_inputs), **self._sample_kwargs
+            ),
+        }
+
+        # 拆分 batch 并做输出变换
+        outputs_list: list[dict] = []
+        num = batched_outputs["actions"].shape[0]
+        model_time = time.monotonic() - start_time
+        for i in range(num):
+            single = jax.tree.map(lambda x: np.asarray(x[i, ...]), batched_outputs)
+            single = self._output_transform(single)
+            single["policy_timing"] = {"infer_ms": model_time * 1000}
+            outputs_list.append(single)
+
+        return outputs_list
+
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata

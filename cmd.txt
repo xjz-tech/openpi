@@ -5,13 +5,19 @@ export HF_HOME=/nfs/turbo/coe-vkamat/huggingface
 
 
 python examples/aloha_real/convert_aloha_data_to_lerobot.py \
-    --raw-dir /nfs/turbo/coe-vkamat/RoboticsDiffusionTransformer/data/peg_data \
+    --raw-dir /nfs/turbo/coe-vkamat/RoboticsDiffusionTransformer/data/peeling \
     --repo-id "xiejunz/peg_data" \
     --no-push-to-hub
 
-
+# tactile版本
+python examples/aloha_real/convert_aloha_data_to_lerobot_tactile.py \
+    --raw-dir /nfs/turbo/coe-vkamat/RoboticsDiffusionTransformer/data/peeling_gru \
+    --repo-id "xiejunz/peel_gru" \
+    --no-push-to-hub
 
 # 计算norm代码：
+
+# 注意要改实验名
 OPENPI_DATA_HOME=/nfs/turbo/coe-vkamat/openpi_cache HF_HOME=/nfs/turbo/coe-vkamat/huggingface HUGGINGFACE_HUB_CACHE=/nfs/turbo/coe-vkamat/huggingface/hub HF_DATASETS_CACHE=/nfs/turbo/coe-vkamat/huggingface/datasets WANDB_DIR=/nfs/turbo/coe-vkamat/wandb WANDB_CACHE_DIR=/nfs/turbo/coe-vkamat/wandb PIP_CACHE_DIR=/nfs/turbo/coe-vkamat/pip_cache TMPDIR=/nfs/turbo/coe-vkamat/tmp /bin/bash -c '/nfs/turbo/coe-vkamat/miniconda3/envs/openpi/bin/python scripts/compute_norm_stats.py --config-name pi0_aloha_lora_finetune_peg --max-frames 100'
 
 
@@ -27,6 +33,8 @@ HF_HOME=/nfs/turbo/coe-vkamat/huggingface \
   --exp-name=peg_finetune_lora --overwrite --no-wandb-enabled
 
 # 完整训练版本
+# 在训练之前记得compute norm
+# 要注意pi0是否resume
 srun --partition=gpu_mig40 --gres=gpu:1 --cpus-per-task=4 --mem=128G --time=48:00:00 \
      --job-name openpi_full bash -c \
 "cd /nfs/turbo/coe-vkamat/openpi && \
@@ -36,7 +44,7 @@ srun --partition=gpu_mig40 --gres=gpu:1 --cpus-per-task=4 --mem=128G --time=48:0
         XDG_CACHE_HOME=/nfs/turbo/coe-vkamat/openpi_cache \
         JAXTYPING_DISABLE=1 && \
  /nfs/turbo/coe-vkamat/miniconda3/envs/openpi/bin/python -u scripts/train.py \
-      pi0_aloha_lora_finetune_peg --exp-name=peg_finetune_lora_full --resume \
+      pi0_aloha_lora_finetune_peg --exp-name=peg_finetune_lora_full --overwrite\
       --batch-size 16 --num-workers 2 \
       2>&1 | tee train_log_full2.txt"
 
