@@ -131,6 +131,8 @@ class PiperGRUController:
         arr = np.asarray(msg.data, dtype=np.float32)
         if arr.size >= self._marker_dim:
             self._marker = arr[: self._marker_dim]
+        else:
+            print(f"Marker 维度不匹配：期望 {self._marker_dim} 维，实际收到 {arr.size} 维，丢弃此 marker")
 
     # ----------------------- 主循环 ----------------------- #
     def run(self) -> None:
