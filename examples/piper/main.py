@@ -40,6 +40,7 @@ class PiperController:
         arm_right_cmd_topic: str,
         action_horizon: int = 50,
         open_loop_horizon: int = 25,
+        right_only: bool = False,
     ) -> None:
         # 加载本地策略，直接返回完整动作序列 (action_horizon=50)
         config = _config.get_config("pi0_aloha_lora_finetune_peg")
@@ -52,6 +53,7 @@ class PiperController:
         self._action_chunk: Optional[np.ndarray] = None  # 缓存的动作序列
         self._prompt = prompt
         self._bridge = CvBridge()
+        self._right_only = right_only
 
         # 最新观测缓存
         self._front_image: Optional[np.ndarray] = None  # 前置摄像头
@@ -111,8 +113,13 @@ class PiperController:
                     img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img, 224, 224))
                     return np.transpose(img, (2, 0, 1))  # HWC -> CHW
 
+                left_state = (
+                    np.zeros(7, dtype=np.float32)
+                    if self._right_only or self._joint_left is None
+                    else self._joint_left
+                )
                 obs = {
-                    "state": np.concatenate([self._joint_left, self._joint_right]),
+                    "state": np.concatenate([left_state, self._joint_right]),
                     "images": {
                         "cam_high": _prep_img(self._front_image),
                         "cam_left_wrist": _prep_img(self._left_image),
@@ -184,15 +191,16 @@ class PiperController:
 
         # 仅对 joint5 进行限位与调整
      
-        # 左臂 joint5 索引 4
-        action[4] = float(np.clip(action[4], JOINT5_MIN, JOINT5_MAX))
-        # 右臂 joint5 索引 11
-        action[11] = float(np.clip(action[11], JOINT5_MIN, JOINT5_MAX))
+        # joint5 限位：右臂必限位，左臂在双臂模式下限位
+        if not self._right_only:
+            action[4] = float(np.clip(action[4], JOINT5_MIN, JOINT5_MAX))  # 左臂
+        action[11] = float(np.clip(action[11], JOINT5_MIN, JOINT5_MAX))    # 右臂
     
 
-        msg_left = JointState()
-        msg_left.position = action[:7].tolist()
-        self._left_cmd_pub.publish(msg_left)
+        if not self._right_only:
+            msg_left = JointState()
+            msg_left.position = action[:7].tolist()
+            self._left_cmd_pub.publish(msg_left)
 
         msg_right = JointState()
         msg_right.position = action[7:14].tolist()
@@ -214,9 +222,10 @@ class PiperController:
         right_home = [0.11994494400000001, 1.3828207680000002, -1.3960084320000001, 0.0, 1.046500448, 0.081498368, 0.0727]
 
         # 创建消息
-        msg_left = JointState()
-        msg_left.name = [f"left_{name}" for name in joint_names]
-        msg_left.position = left_home
+        if not self._right_only:
+            msg_left = JointState()
+            msg_left.name = [f"left_{name}" for name in joint_names]
+            msg_left.position = left_home
 
         msg_right = JointState()
         msg_right.name = [f"right_{name}" for name in joint_names]
@@ -226,13 +235,20 @@ class PiperController:
         rate = rospy.Rate(rate_hz)
         start_time = rospy.get_time()
         while not rospy.is_shutdown() and rospy.get_time() - start_time < duration:
-            self._left_cmd_pub.publish(msg_left)
+            if not self._right_only:
+                self._left_cmd_pub.publish(msg_left)
             self._right_cmd_pub.publish(msg_right)
             rate.sleep()
 
         rospy.loginfo("机械臂已重置到初始位置。")
 
     def _ready(self) -> bool:
+        if self._right_only:
+            return (
+                self._front_image is not None
+                and self._right_image is not None
+                and self._joint_right is not None
+            )
         return (
             self._front_image is not None
             and self._right_image is not None
@@ -261,6 +277,7 @@ def main() -> None:
     parser.add_argument('--img_right_topic', type=str, default='/camera_r/color/image_raw')
     parser.add_argument('--action_horizon', type=int, default=50, help='每次推理返回的动作序列长度')
     parser.add_argument('--open_loop_horizon', type=int, default=25, help='在本地执行多少步后重新推理一次 (应 < action_horizon)')
+    parser.add_argument('--right-only', action='store_true', default=True, help='仅右臂模式（无左臂话题时启用）')
 
     args = parser.parse_args()
 
@@ -292,6 +309,7 @@ def main() -> None:
         arm_right_cmd_topic=args.puppet_arm_right_cmd_topic,
         action_horizon=args.action_horizon,
         open_loop_horizon=args.open_loop_horizon,
+        right_only=args.right_only,
     )
 
     # 使用线程防止阻塞 Ctrl+C

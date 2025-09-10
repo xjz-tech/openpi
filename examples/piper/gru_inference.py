@@ -6,7 +6,7 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float32MultiArray
 
 import torch
 from torch import nn
@@ -16,6 +16,19 @@ from openpi_client import image_tools
 from openpi.training import config as _config
 from openpi.policies import policy_config as _policy_config
 
+"""
+python examples/piper/gru_inference.py \
+  --pi0-checkpoint checkpoints/pi0_aloha_lora_finetune_peg/peg_finetune_lora_full/19999 \
+  --pi0-config pi0_aloha_lora_finetune_peg \
+  --prompt "put the eraser into the box" \
+  --pca-path checkpoints/pi0_aloha_lora_finetune_peg/PCA/pca_marker_right.joblib \
+  --gru-path checkpoints/pi0_aloha_lora_finetune_peg/gru/iterations \
+  --marker_topic /Marker_Tracking_Right_DXDY \
+  --action_horizon 50 \
+  --open_loop_horizon 25 \
+  --rate_hz 15 \
+  --right-only
+"""
 
 # 仅对 joint5 做限位（弧度制）。
 JOINT5_MIN = -1.22
@@ -63,6 +76,7 @@ class PiperGRUController:
         action_horizon: int = 50,
         open_loop_horizon: int = 25,
         rate_hz: int = 15,
+        right_only: bool = False,
     ) -> None:
         # ---------- Pi0 策略加载 ---------- #
         cfg = _config.get_config(pi0_config_name)
@@ -85,6 +99,7 @@ class PiperGRUController:
         self._open_loop_horizon = open_loop_horizon
         self._rate_hz = rate_hz
         self._prompt = prompt
+        self._right_only = right_only
 
         # ---------- 状态缓存 ---------- #
         self._bridge = CvBridge()
@@ -106,10 +121,15 @@ class PiperGRUController:
         rospy.Subscriber(arm_left_state_topic, JointState, self._left_joint_state_cb, queue_size=1)
         rospy.Subscriber(arm_right_state_topic, JointState, self._right_joint_state_cb, queue_size=1)
 
-        rospy.Subscriber(marker_topic, Float64MultiArray, self._marker_cb, queue_size=1)
+        rospy.Subscriber(marker_topic, Float32MultiArray, self._marker_cb, queue_size=1)
 
         self._left_cmd_pub = rospy.Publisher(arm_left_cmd_topic, JointState, queue_size=1)
         self._right_cmd_pub = rospy.Publisher(arm_right_cmd_topic, JointState, queue_size=1)
+
+        # 移动到初始位置
+        print("[DEBUG] 开始重置到初始位置...")
+        self._reset_to_home_position()
+        print("[DEBUG] 初始化完成")
 
     # --------------------- ROS 回调 --------------------- #
     def _front_cam_cb(self, msg: Image) -> None:
@@ -127,7 +147,7 @@ class PiperGRUController:
     def _right_joint_state_cb(self, msg: JointState) -> None:
         self._joint_right = np.array(msg.position[:7], dtype=np.float32)
 
-    def _marker_cb(self, msg: Float64MultiArray) -> None:
+    def _marker_cb(self, msg: Float32MultiArray) -> None:
         arr = np.asarray(msg.data, dtype=np.float32)
         if arr.size >= self._marker_dim:
             self._marker = arr[: self._marker_dim]
@@ -149,11 +169,13 @@ class PiperGRUController:
                 or self._pi0_step >= len(self._pi0_chunk)
             ):
                 obs = self._build_obs()
+                print(f"[DEBUG] obs['prompt']: {obs.get('prompt', 'No prompt in obs')}")
                 result = self._policy.infer(obs)
                 actions = result["actions"]
                 if actions.ndim == 1:
                     actions = actions[None, :]
                 self._pi0_chunk = np.asarray(actions, dtype=np.float32)
+                print(f"[DEBUG] Pi0推理完成，action chunk长度: {len(self._pi0_chunk)}")
                 self._pi0_step = 0
                 self._gru_hx = None  # 重置 GRU 隐状态
 
@@ -174,6 +196,10 @@ class PiperGRUController:
                 out_seq, self._gru_hx = self._gru(feat_t, self._gru_hx)
                 action = out_seq[0, 0].cpu().numpy()  # [A]
 
+            print(f"[DEBUG] GRU执行第 {self._pi0_step + 1}/{len(self._pi0_chunk)} 步")
+            print(f"[DEBUG] Pi0动作: {pi0_action[7:14].tolist()}... (右臂全部关节)")
+            print(f"[DEBUG] GRU动作: {action[7:14].tolist()}... (右臂全部关节)")
+            print(f"[DEBUG] 动作差异: {np.abs(action - pi0_action)[7:14].tolist()}... (右臂全部关节)")
             self._publish_action(action)
             self._pi0_step += 1
             rate.sleep()
@@ -186,7 +212,12 @@ class PiperGRUController:
             img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img, 224, 224))
             return np.transpose(img, (2, 0, 1))  # HWC -> CHW
 
-        state = np.concatenate([self._joint_left, self._joint_right]).astype(np.float32)
+        left_state = (
+            np.zeros(7, dtype=np.float32)
+            if self._right_only or self._joint_left is None
+            else self._joint_left
+        )
+        state = np.concatenate([left_state, self._joint_right]).astype(np.float32)
         return {
             "state": state,
             "images": {
@@ -194,6 +225,7 @@ class PiperGRUController:
                 "cam_left_wrist": _prep_img(self._left_image),
                 "cam_right_wrist": _prep_img(self._right_image),
             },
+            "prompt": self._prompt,
         }
 
     def _publish_action(self, action: np.ndarray) -> None:
@@ -205,20 +237,64 @@ class PiperGRUController:
             rospy.logwarn(f"Action 长度应为 14，但得到 {action.shape[0]}，跳过发布")
             return
 
-        # joint5 限位
+        # joint5 限位：右臂必限位，左臂在双臂模式下限位
         action = action.copy()
-        action[4] = float(np.clip(action[4], JOINT5_MIN, JOINT5_MAX))
-        action[11] = float(np.clip(action[11], JOINT5_MIN, JOINT5_MAX))
+        if not self._right_only:
+            action[4] = float(np.clip(action[4], JOINT5_MIN, JOINT5_MAX))  # 左臂
+        action[11] = float(np.clip(action[11], JOINT5_MIN, JOINT5_MAX))    # 右臂
 
-        msg_left = JointState()
-        msg_left.position = action[:7].tolist()
-        self._left_cmd_pub.publish(msg_left)
+        if not self._right_only:
+            msg_left = JointState()
+            msg_left.position = action[:7].tolist()
+            self._left_cmd_pub.publish(msg_left)
 
         msg_right = JointState()
         msg_right.position = action[7:14].tolist()
         self._right_cmd_pub.publish(msg_right)
 
+    def _reset_to_home_position(self, duration: float = 3.0, rate_hz: int = 30):
+        """
+        通过在指定时间内以固定频率持续发布目标位置，将机器人移动到初始位置。
+
+        Args:
+            duration (float): 持续发布指令的时长（秒）。
+            rate_hz (int): 发布指令的频率（赫兹）。
+        """
+        rospy.loginfo("正在重置机械臂到初始位置...")
+
+        # 定义关节名称和初始位置
+        joint_names = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate", "gripper"]
+        left_home = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3]  # 调整了夹爪初始值以防超限
+        right_home = [0.11994494400000001, 1.3828207680000001, -1.3960084320000001, 0.0, 1.046500448, 0.081498368, 0.0727]
+
+        # 创建消息
+        if not self._right_only:
+            msg_left = JointState()
+            msg_left.name = [f"left_{name}" for name in joint_names]
+            msg_left.position = left_home
+
+        msg_right = JointState()
+        msg_right.name = [f"right_{name}" for name in joint_names]
+        msg_right.position = right_home
+
+        # 在循环中持续发布
+        rate = rospy.Rate(rate_hz)
+        start_time = rospy.get_time()
+        while not rospy.is_shutdown() and rospy.get_time() - start_time < duration:
+            if not self._right_only:
+                self._left_cmd_pub.publish(msg_left)
+            self._right_cmd_pub.publish(msg_right)
+            rate.sleep()
+
+        rospy.loginfo("机械臂已重置到初始位置。")
+
     def _ready(self) -> bool:
+        if self._right_only:
+            return (
+                self._front_image is not None
+                and self._right_image is not None
+                and self._joint_right is not None
+            )
         return (
             self._front_image is not None
             and self._right_image is not None
@@ -248,6 +324,7 @@ def main() -> None:
     parser.add_argument('--action_horizon', type=int, default=50)
     parser.add_argument('--open_loop_horizon', type=int, default=25)
     parser.add_argument('--rate_hz', type=int, default=15)
+    parser.add_argument('--right-only', action='store_true', default=True, help='仅右臂模式（无左臂话题时启用）')
 
     args = parser.parse_args()
 
@@ -270,6 +347,7 @@ def main() -> None:
         action_horizon=args.action_horizon,
         open_loop_horizon=args.open_loop_horizon,
         rate_hz=args.rate_hz,
+        right_only=args.right_only,
     )
 
     threading.Thread(target=controller.run, daemon=True).start()

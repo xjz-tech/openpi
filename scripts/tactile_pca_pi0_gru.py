@@ -20,17 +20,16 @@ from openpi.training import config as _config
 from openpi.policies import policy_config as _policy_config
 """
 python scripts/tactile_pca_pi0_gru.py \
-    --repo-id "xiejunz/peel_gru" \
+    --repo-id "xiejunz/peg_data" \
     --pi0-checkpoint checkpoints/pi0_aloha_lora_finetune_peg/peg_finetune_lora_full/19999 \
     --num-steps 20000 \
     --batch 32 \
     --lr 1e-4 \
-    --hidden 512 \
+    --hidden 32 \
     --log-interval 100 \
     --save-interval 1000 \
     --wandb-project "marker-pca-pi0-gru" \
-    --wandb-enabled \
-    --skip-pca
+    --wandb-enabled 
 """
 
 def _log(msg: str) -> None:
@@ -83,7 +82,7 @@ def _find_marker_key_from_sample(sample: dict, substring: str = "marker_tracking
 def train_pca_on_marker_lerobot(
     repo_id: str,
     out_path: Path,
-    k: int = 64,
+    k: int = 7,
     max_samples: int = 10_000,
     marker_key_substring: str = "marker_tracking_right_dxdy",
 ) -> SkPCA:
@@ -309,9 +308,9 @@ class LeRobotPi0ActionMarkerDataset(Dataset):  # type: ignore[misc]
 
 
 class GRURegressor(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, num_layers: int = 3) -> None:
         super().__init__()
-        self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.rnn = nn.GRU(input_dim, hidden_dim, num_layers=num_layers, batch_first=True)
         self.out = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # x: [B, T, F]
@@ -325,7 +324,8 @@ def train_gru(
     out_path: Path,
     *,
     horizon: int = 50,
-    hidden_dim: int = 256,
+    hidden_dim: int = 512,
+    num_layers: int = 1,
     batch_size: int = 8,
     num_steps: int = 1000,
     lr: float = 1e-3,
@@ -356,11 +356,11 @@ def train_gru(
     action_dim = sample_gt.shape[-1]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = GRURegressor(input_dim=feature_dim, hidden_dim=hidden_dim, output_dim=action_dim).to(device)
+    model = GRURegressor(input_dim=feature_dim, hidden_dim=hidden_dim, output_dim=action_dim, num_layers=num_layers).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn = nn.MSELoss()
 
-    _log(f"开始 GRU 训练：steps={num_steps}, batch={batch_size}, horizon={horizon}, feature_dim={feature_dim}, action_dim={action_dim}, lr={lr}")
+    _log(f"开始 GRU 训练：steps={num_steps}, batch={batch_size}, horizon={horizon}, feature_dim={feature_dim}, action_dim={action_dim}, num_layers={num_layers}, lr={lr}")
     
     # 初始化wandb
     if wandb_enabled:
@@ -375,6 +375,7 @@ def train_gru(
                 "repo_id": repo_id,
                 "horizon": horizon,
                 "hidden_dim": hidden_dim,
+                "num_layers": num_layers,
                 "batch_size": batch_size,
                 "num_steps": num_steps,
                 "lr": lr,
@@ -448,6 +449,7 @@ def train_gru(
                 "state_dict": model.state_dict(), 
                 "input_dim": feature_dim, 
                 "hidden_dim": hidden_dim, 
+                "num_layers": num_layers,
                 "output_dim": action_dim,
                 "step": step,
                 "optimizer": optim.state_dict(),
@@ -466,6 +468,7 @@ def train_gru(
         "state_dict": model.state_dict(), 
         "input_dim": feature_dim, 
         "hidden_dim": hidden_dim, 
+        "num_layers": num_layers,
         "output_dim": action_dim,
         "step": num_steps,
         "optimizer": optim.state_dict(),
@@ -498,6 +501,7 @@ def main() -> None:
     p.add_argument("--repo-id", type=str, required=True, help="LeRobot dataset repo_id")
     p.add_argument("--horizon", type=int, default=50, help="Temporal window length")
     p.add_argument("--hidden", type=int, default=256, help="GRU hidden size")
+    p.add_argument("--num-layers", type=int, default=1, help="Number of GRU layers")
     p.add_argument("--num-steps", type=int, default=1000, help="Number of training steps")
     p.add_argument("--log-interval", type=int, default=100, help="Log interval in steps")
     p.add_argument("--save-interval", type=int, default=500, help="Save interval in steps")
@@ -541,6 +545,7 @@ def main() -> None:
         args.gru_out,
         horizon=args.horizon,
         hidden_dim=args.hidden,
+        num_layers=args.num_layers,
         batch_size=args.batch,
         num_steps=args.num_steps,
         lr=args.lr,
