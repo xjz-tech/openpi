@@ -14,13 +14,14 @@ import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 from openpi.transforms import flatten_dict as _flatten_dict
 from openpi.training import config as _config
 from openpi.policies import policy_config as _policy_config
+from openpi.shared import normalize as _normalize
 
 """
 python scripts/eval_pi0_gru_peel.py \
-  --repo-id xiejunz/peel_gru \
+  --repo-id xiejunz/peg_data \
   --out-dir outputs/pi0_gru_eval/peel_gru \
   --pca-path checkpoints/pi0_aloha_lora_finetune_peg/PCA/pca_marker_right.joblib \
-  --gru-path checkpoints/pi0_aloha_lora_finetune_peg/gru/iterations \
+  --gru-path checkpoints/pi0_aloha_lora_finetune_peg/gru/iteration_20000 \
   --pi0-checkpoint checkpoints/pi0_aloha_lora_finetune_peg/peg_finetune_lora_full/19999 \
   --pi0-config pi0_aloha_lora_finetune_peg \
   --prompt "put the eraser into the box" \
@@ -110,9 +111,9 @@ def _prepare_obs_at(flat: dict, t: int, action_dim_fallback: int) -> dict:
 
 
 class GRUCorrector(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, num_layers: int = 1) -> None:
         super().__init__()
-        self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.rnn = nn.GRU(input_dim, hidden_dim, num_layers=num_layers, batch_first=True)
         self.out = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x: torch.Tensor, hx: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -124,17 +125,22 @@ class GRUCorrector(nn.Module):
 def _infer_pi0_action(policy: Any, obs: dict) -> np.ndarray:
     out = policy.infer(obs)
     actions = np.asarray(out["actions"], dtype=np.float32)
+    # 只取后7维（前7维都是0）
+    if actions.ndim == 1:
+        actions = actions[-7:]
+    else:
+        actions = actions[:, -7:]
     if actions.ndim == 1:
         return actions
-    # 如果返回 [H, A]，取第一步
     return actions[0]
 
 
 def _infer_pi0_chunk(policy: Any, obs: dict) -> np.ndarray:
-    """返回 Pi0 的一段动作序列 [H, A]。若只返回单步，则扩展为 [1, A]。"""
+    """返回 Pi0 的一段动作序列 [H, 7]。若只返回单步，则扩展为 [1, 7]。"""
     out = policy.infer(obs)
 
     actions = np.asarray(out["actions"], dtype=np.float32)
+    actions = actions[:, -7:]
     if actions.ndim == 1:
         actions = actions[None, :]
     return actions
@@ -145,13 +151,11 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _plot_right_arm(pi0_actions: np.ndarray, gru_actions: np.ndarray, gt_actions: np.ndarray, out_file: Path, title: str) -> None:
-    # 右臂关节对应动作维度 [7:14]
-    right_pi0 = pi0_actions[:, 7:14]
+    right_pi0 = pi0_actions[:, 0:7]
     right_gru = gru_actions[:, 7:14]
     right_gt = gt_actions[:, 7:14]
     T = right_pi0.shape[0]
 
-    # 调试信息
     print(f"绘图调试: T={T}, pi0_shape={right_pi0.shape}, gru_shape={right_gru.shape}, gt_shape={right_gt.shape}")
     print(f"pi0范围: {right_pi0.min():.4f} ~ {right_pi0.max():.4f}")
     print(f"gru范围: {right_gru.min():.4f} ~ {right_gru.max():.4f}")
@@ -163,7 +167,6 @@ def _plot_right_arm(pi0_actions: np.ndarray, gru_actions: np.ndarray, gt_actions
     
     for j in range(7):
         ax = axes[j]
-        # 确保数据不为空
         if T > 0:
             ax.plot(t, right_pi0[:, j], label="Pi0", color="#1f77b4", linewidth=1.5, marker='o', markersize=2)
             ax.plot(t, right_gru[:, j], label="GRU", color="#d62728", linewidth=1.2, marker='s', markersize=2)
@@ -181,7 +184,7 @@ def _plot_right_arm(pi0_actions: np.ndarray, gru_actions: np.ndarray, gt_actions
 
 
 def _build_right_arm_figure(pi0_actions: np.ndarray, gru_actions: np.ndarray, gt_actions: np.ndarray, title: str):
-    right_pi0 = pi0_actions[:, 7:14]
+    right_pi0 = pi0_actions[:, 0:7]
     right_gru = gru_actions[:, 7:14]
     right_gt = gt_actions[:, 7:14]
     T = right_pi0.shape[0]
@@ -207,7 +210,6 @@ def _build_right_arm_figure(pi0_actions: np.ndarray, gru_actions: np.ndarray, gt
 
 def _extract_episode_id(flat: dict) -> Optional[int]:
     """从样本中提取 episode 标识。LeRobot使用episode_data_index管理episode。"""
-    # LeRobot数据集的主要episode键
     if "episode_index" in flat:
         return int(flat["episode_index"])
     if "episode_idx" in flat:
@@ -273,7 +275,8 @@ def evaluate(
     max_episodes: Optional[int] = None,
     stride: int = 25,
     t_use: int = 25,  # 改为25，与stride一致
-    max_start_limit: int = 300,
+    max_start_limit: int = 500,
+    gru_num_layers: int = 1,
 ) -> None:
     _log(f"加载数据集: {repo_id}")
     # 使用序列采样：探测需要的键，基于 fps 构造 delta_timestamps
@@ -299,8 +302,27 @@ def evaluate(
     input_dim = int(ckpt.get("input_dim"))
     hidden_dim = int(ckpt.get("hidden_dim"))
     output_dim = int(ckpt.get("output_dim"))
-    gru = GRUCorrector(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim).eval()
+    num_layers = int(ckpt.get("num_layers", gru_num_layers))  # 优先使用checkpoint中的层数，否则使用参数
+    gru = GRUCorrector(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers).eval()
     gru.load_state_dict(ckpt["state_dict"])  # type: ignore[arg-type]
+
+    # 加载训练管线的 actions 归一化统计（用于对 Pi0 后7维做 Z-score，与训练一致）
+    actions_mean: Optional[np.ndarray]
+    actions_std: Optional[np.ndarray]
+    actions_mean = None
+    actions_std = None
+    try:
+        cfg_assets = cfg.assets_dirs
+        asset_id = cfg.data.asset_id or cfg.data.repo_id
+        norm = _normalize.load(cfg_assets / asset_id) if asset_id is not None else None
+        if norm is not None and "actions" in norm:
+            actions_mean = np.asarray(norm["actions"].mean[-7:], dtype=np.float32)
+            actions_std = np.asarray(norm["actions"].std[-7:], dtype=np.float32)
+            _log(f"已加载 actions 归一化统计：mean/std 形状={actions_mean.shape}/{actions_std.shape}")
+        else:
+            _log("未找到 actions 的归一化统计，评估时将不对 Pi0 做 Z-score")
+    except Exception as e:
+        _log(f"加载归一化统计失败：{e}; 评估时将不对 Pi0 做 Z-score")
 
     _ensure_dir(out_dir)
 
@@ -317,11 +339,10 @@ def evaluate(
         ep_id_opt = _extract_episode_id(flat)
         ep_id = ep_id_opt if ep_id_opt is not None else -1
 
-        # 检测episode切换：如果episode变了，立即对上一个episode执行收尾保存
+        # episode切换时收尾
         if active_ep_id is None:
             active_ep_id = ep_id
         elif ep_id != active_ep_id:
-            # 对上一个episode执行收尾保存
             prev_id = active_ep_id
             if prev_id in current_ep_data and len(current_ep_data[prev_id]['pi0_actions']) > 0:
                 ep_name_prev = f"episode_{prev_id:04d}" if prev_id >= 0 else "episode_unknown"
@@ -329,7 +350,7 @@ def evaluate(
                 gru_full_prev = np.concatenate(current_ep_data[prev_id]['gru_actions'], axis=0)
                 gt_full_prev = np.concatenate(current_ep_data[prev_id]['gt_actions'], axis=0)
                 right_slice_prev = slice(7, 14)
-                mae_pi0_gt_prev = float(np.nanmean(np.abs((pi0_full_prev - gt_full_prev)[:, right_slice_prev])))
+                mae_pi0_gt_prev = float(np.nanmean(np.abs(pi0_full_prev - gt_full_prev[:, right_slice_prev])))
                 mae_gru_gt_prev = float(np.nanmean(np.abs((gru_full_prev - gt_full_prev)[:, right_slice_prev])))
                 title_prev = (
                     f"{ep_name_prev} | Complete Episode | steps 0-{len(pi0_full_prev)-1} | "
@@ -352,10 +373,9 @@ def evaluate(
             continue
         processed_eps.add(ep_id)
 
-        # 窗口序号（估计为该 episode 已见窗口数）与 stride、最大起点限制
+        # 窗口筛选与步进
         cnt = ep_window_counters.get(ep_id, 0)
         ep_window_counters[ep_id] = cnt + 1
-        # 估计窗口起点（基于序列样本是按步推进的假设）
         start_est = cnt
         if start_est > int(max_start_limit):
             continue
@@ -389,14 +409,18 @@ def evaluate(
 
         T_use = horizon
         hx: Optional[torch.Tensor] = None
-        pi0_actions = np.zeros((T_use, action_dim), dtype=np.float32)
+        pi0_actions = np.zeros((T_use, 7), dtype=np.float32)
         gru_actions = np.zeros((T_use, action_dim), dtype=np.float32)
         dropped_steps = 0
 
         for t in range(T_use):
             pi0_t = pi0_chunk[t]
+            # 对 Pi0 的后7维应用 Z-score（若有统计），与训练一致
+            if actions_mean is not None and actions_std is not None:
+                pi0_t = (pi0_t - actions_mean) / (actions_std + 1e-6)
             pi0_actions[t] = pi0_t
 
+            # 始终使用：Pi0(7) + PCA(7) 拼接作为 GRU 输入
             mv = _to_numpy(marker_full[min(t, marker_full.shape[0] - 1)]).astype(np.float32)
             if mv.ndim != 1:
                 mv = mv.reshape(-1)
@@ -435,7 +459,7 @@ def evaluate(
         gru_full_last = np.concatenate(current_ep_data[active_ep_id]['gru_actions'], axis=0)
         gt_full_last = np.concatenate(current_ep_data[active_ep_id]['gt_actions'], axis=0)
         right_slice_last = slice(7, 14)
-        mae_pi0_gt_last = float(np.nanmean(np.abs((pi0_full_last - gt_full_last)[:, right_slice_last])))
+        mae_pi0_gt_last = float(np.nanmean(np.abs(pi0_full_last - gt_full_last[:, right_slice_last])))
         mae_gru_gt_last = float(np.nanmean(np.abs((gru_full_last - gt_full_last)[:, right_slice_last])))
         title_last = (
             f"{ep_name_last} | Complete Episode | steps 0-{len(pi0_full_last)-1} | "
@@ -451,7 +475,6 @@ def evaluate(
             f"Pi0-GT MAE={mae_pi0_gt_last:.6f}, GRU-GT MAE={mae_gru_gt_last:.6f}"
         )
 
-    # 不保存summary.json文件
     _log(f"评估完成。图片保存在: {out_dir}")
 
 
@@ -469,11 +492,11 @@ def main() -> None:
     p.add_argument("--prompt", type=str, default=None, help="Default inference prompt (optional)")
     p.add_argument("--marker-key-substring", type=str, default="marker_tracking_right_dxdy", help="Marker key substring")
     p.add_argument("--window-size", type=int, default=200, help="Timesteps per plot window")
-    p.add_argument("--max-episodes", type=int, default=None, help="Limit number of episodes to evaluate")
+    p.addendant("--max-episodes", type=int, default=None, help="Limit number of episodes to evaluate")
     p.add_argument("--stride", type=int, default=25, help="Sliding window stride")
     p.add_argument("--t-use", type=int, default=25, help="Fixed window length for each evaluation")
     p.add_argument("--max-start", type=int, default=300, help="Max starting index for windows")
-    # 始终保存PNG到每个episode的子目录，不再提供PDF/可选PNG相关参数
+    p.add_argument("--gru-num-layers", type=int, default=1, help="Number of GRU layers (overridden by checkpoint if available)")
 
     args = p.parse_args()
 
@@ -491,6 +514,7 @@ def main() -> None:
         stride=args.stride,
         t_use=args.t_use,
         max_start_limit=args.max_start,
+        gru_num_layers=args.gru_num_layers,
     )
 
 

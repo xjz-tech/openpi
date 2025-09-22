@@ -819,7 +819,7 @@ _CONFIGS = [
 
     TrainConfig(
         name="pi0_aloha_lora_finetune_peg",
-        model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotAlohaDataConfig(
             repo_id="xiejunz/peg_data",
             assets=AssetsConfig(
@@ -845,14 +845,14 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
-        freeze_filter=pi0.Pi0Config(
+        freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
         ema_decay=None,
     ),
     TrainConfig(
         name="pi0_aloha_lora_finetune_peel_gru",
-        model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotAlohaDataConfig(
             repo_id="xiejunz/peel_gru",
             assets=AssetsConfig(
@@ -878,7 +878,7 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
-        freeze_filter=pi0.Pi0Config(
+        freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
         ema_decay=None,

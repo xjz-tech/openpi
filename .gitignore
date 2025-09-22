@@ -27,6 +27,9 @@ wandb/
 logs/
 train_log_*.txt
 
+# Generated outputs (figures, dumps, eval images, etc.)
+outputs/
+
 # Cache and temporary files
 .cache/
 tmp/
